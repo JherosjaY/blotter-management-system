@@ -1,0 +1,1429 @@
+package com.example.blottermanagementsystem.ui.activities;
+
+import android.content.Intent;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.util.Log;
+import android.util.Pair;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+
+import com.example.blottermanagementsystem.R;
+import com.example.blottermanagementsystem.data.database.BlotterDatabase;
+import com.example.blottermanagementsystem.data.entity.BlotterReport;
+import com.example.blottermanagementsystem.data.model.InvestigationStep;
+import com.example.blottermanagementsystem.ui.adapters.ImageAdapter;
+import com.example.blottermanagementsystem.ui.adapters.InvestigationStepAdapter;
+import com.example.blottermanagementsystem.ui.adapters.VideoAdapter;
+import com.example.blottermanagementsystem.ui.dialogs.AddWitnessDialogFragment;
+import com.example.blottermanagementsystem.ui.dialogs.AddSuspectDialogFragment;
+import com.example.blottermanagementsystem.ui.dialogs.AddEvidenceDialogFragment;
+import com.example.blottermanagementsystem.ui.dialogs.DocumentResolutionDialogFragment;
+import com.example.blottermanagementsystem.ui.dialogs.KPFormsDialogFragment;
+import com.example.blottermanagementsystem.utils.GlobalLoadingManager;
+import com.example.blottermanagementsystem.utils.NotificationHelper;
+import com.example.blottermanagementsystem.utils.PreferencesManager;
+import com.example.blottermanagementsystem.utils.ApiClient;
+import com.example.blottermanagementsystem.utils.NetworkMonitor;
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.card.MaterialCardView;
+import com.google.android.material.chip.Chip;
+import com.google.android.material.imageview.ShapeableImageView;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.Executors;
+
+public class OfficerCaseDetailActivity extends AppCompatActivity {
+    
+    // UI Components (using existing layout)
+    private TextView tvCaseNumber, tvIncidentType, tvIncidentDate, tvIncidentLocation;
+    private TextView tvComplainantName, tvComplainantContact, tvComplainantAddress;
+    private TextView tvRespondentName, tvRespondentAlias, tvRespondentAddress, tvRespondentContact;
+    private TextView tvAccusation, tvRelationship;
+    private TextView tvNarrative;
+    private androidx.appcompat.widget.Toolbar toolbar;
+    private com.google.android.material.chip.Chip chipStatus;
+    
+    // Officer Action Buttons (using existing layout)
+    private MaterialButton btnUpdateStatus, btnEdit, btnDelete, btnResolveCase;
+    private MaterialButton btnStartInvestigation;  // ← Dedicated Start Investigation button
+    private MaterialButton btnViewPersonHistory;  // ← View person history button
+    private MaterialButton btnAddWitness, btnAddSuspect, btnAddEvidence, btnCreateHearing, btnDocumentResolution, btnKPForms;
+    
+    // ScrollView for content
+    private androidx.core.widget.NestedScrollView nestedScrollView;
+    
+    // Media Components
+    private RecyclerView recyclerImages, recyclerVideos;
+    private ImageAdapter imageAdapter;
+    private VideoAdapter videoAdapter;
+    private TextView tvImagesLabel, tvVideosLabel;
+    
+    // Data
+    private BlotterDatabase database;
+    private PreferencesManager preferencesManager;
+    private NotificationHelper notificationHelper;
+    private BlotterReport currentReport;
+    private List<Uri> imageList = new ArrayList<>();
+    private List<Uri> videoList = new ArrayList<>();
+    private int reportId;
+    
+    // Investigation Timeline
+    private RecyclerView rvInvestigationSteps;
+    private InvestigationStepAdapter stepAdapter;
+    private List<InvestigationStep> investigationSteps = new ArrayList<>();
+    
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_officer_case_investigation);
+        preferencesManager = new PreferencesManager(this);
+        notificationHelper = new NotificationHelper(this);
+        
+        // Set status bar color to match dark theme
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+            getWindow().setStatusBarColor(getResources().getColor(R.color.primary_dark_blue));
+        }
+        
+        // Get report ID from intent
+        reportId = getIntent().getIntExtra("reportId", -1);
+        if (reportId == -1) {
+            Toast.makeText(this, "Invalid case ID", Toast.LENGTH_SHORT).show();
+            finish();
+            return;
+        }
+        
+        initViews();
+        setupRecyclerViews();
+        setupListeners();
+        loadCaseDetails();
+    }
+    
+    private void initViews() {
+        // Toolbar setup
+        toolbar = findViewById(R.id.toolbar);
+        setSupportActionBar(toolbar);
+        if (getSupportActionBar() != null) {
+            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+            getSupportActionBar().setTitle("Case Investigation");
+        }
+        toolbar.setNavigationOnClickListener(v -> finish());
+        
+        // Case Information (using existing layout)
+        tvCaseNumber = findViewById(R.id.tvCaseNumber);
+        chipStatus = findViewById(R.id.chipStatus);
+        tvIncidentType = findViewById(R.id.tvIncidentType);
+        tvIncidentDate = findViewById(R.id.tvIncidentDate);
+        tvIncidentLocation = findViewById(R.id.tvIncidentLocation);
+        
+        // Complainant Information
+        tvComplainantName = findViewById(R.id.tvComplainantName);
+        tvComplainantContact = findViewById(R.id.tvContactNumber);
+        tvComplainantAddress = findViewById(R.id.tvAddress);
+        
+        // Respondent Information
+        tvRespondentName = findViewById(R.id.tvRespondentName);
+        tvRespondentAlias = findViewById(R.id.tvRespondentAlias);
+        tvRespondentAddress = findViewById(R.id.tvRespondentAddress);
+        tvRespondentContact = findViewById(R.id.tvRespondentContact);
+        tvAccusation = findViewById(R.id.tvAccusation);
+        tvRelationship = findViewById(R.id.tvRelationship);
+        
+        // Narrative
+        tvNarrative = findViewById(R.id.tvDescription);
+        
+        // Officer Action Buttons (using existing layout)
+        btnUpdateStatus = findViewById(R.id.btnUpdateStatus);
+        btnStartInvestigation = findViewById(R.id.btnStartInvestigation);  // ← Initialize dedicated button
+        btnViewPersonHistory = findViewById(R.id.btnViewPersonHistory);  // ← Initialize person history button
+        btnEdit = findViewById(R.id.btnEdit);
+        btnDelete = findViewById(R.id.btnDelete);
+        // Resolve button may not exist in layout - will be created dynamically if needed
+        btnResolveCase = null;
+        
+        // Investigation Feature Buttons
+        btnAddWitness = findViewById(R.id.btnAddWitness);
+        btnAddSuspect = findViewById(R.id.btnAddSuspect);
+        btnAddEvidence = findViewById(R.id.btnAddEvidence);
+        btnCreateHearing = findViewById(R.id.btnCreateHearing);
+        btnDocumentResolution = findViewById(R.id.btnDocumentResolution);
+        btnKPForms = findViewById(R.id.btnKPForms);
+        
+        // ScrollView
+        nestedScrollView = findViewById(R.id.nestedScrollView);
+        
+        // Media Components
+        recyclerImages = findViewById(R.id.recyclerImages);
+        recyclerVideos = findViewById(R.id.recyclerVideos);
+        tvImagesLabel = findViewById(R.id.tvImagesLabel);
+        tvVideosLabel = findViewById(R.id.tvVideosLabel);
+        
+        // Set dynamic bottom padding
+        setDynamicBottomPadding();
+    }
+    
+    private void setDynamicBottomPadding() {
+        nestedScrollView.post(() -> {
+            // Get screen height and density
+            int screenHeight = getResources().getDisplayMetrics().heightPixels;
+            float density = getResources().getDisplayMetrics().density;
+            
+            // Toolbar height is approximately 56dp
+            int toolbarHeightPx = (int) (56 * density);
+            
+            // Available height for content
+            int availableHeight = screenHeight - toolbarHeightPx;
+            
+            // Get the content LinearLayout (first child of NestedScrollView)
+            View child = nestedScrollView.getChildAt(0);
+            if (child instanceof LinearLayout) {
+                LinearLayout contentLayout = (LinearLayout) child;
+                
+                // Measure content height
+                contentLayout.measure(
+                    android.view.View.MeasureSpec.makeMeasureSpec(nestedScrollView.getWidth(), android.view.View.MeasureSpec.AT_MOST),
+                    android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED)
+                );
+                int contentHeight = contentLayout.getMeasuredHeight();
+                
+                // Calculate bottom padding
+                int bottomPadding = 8; // Minimum 8dp
+                
+                // If content fits on screen, add extra padding for balance
+                if (contentHeight < availableHeight) {
+                    int extraSpace = availableHeight - contentHeight;
+                    bottomPadding = extraSpace / 4; // Use 1/4 of extra space
+                }
+                
+                // Apply padding
+                int currentStart = contentLayout.getPaddingStart();
+                int currentEnd = contentLayout.getPaddingEnd();
+                int currentTop = contentLayout.getPaddingTop();
+                contentLayout.setPadding(currentStart, currentTop, currentEnd, bottomPadding);
+                
+                Log.d("OfficerCaseDetail", "✅ Dynamic bottom padding: " + bottomPadding + "px (~" + (int)(bottomPadding/density) + "dp)");
+            }
+        });
+    }
+    
+    private void setupRecyclerViews() {
+        // Images RecyclerView (VIEW-ONLY)
+        imageAdapter = new ImageAdapter(imageList, new ImageAdapter.OnImageClickListener() {
+            @Override
+            public void onImageClick(Uri uri) {
+                viewImage(uri);
+            }
+            
+            @Override
+            public void onImageDelete(int position) {
+                // NO DELETE for officers - view only
+                Toast.makeText(OfficerCaseDetailActivity.this, "View only - cannot delete evidence", Toast.LENGTH_SHORT).show();
+            }
+        });
+        recyclerImages.setLayoutManager(new LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false));
+        recyclerImages.setAdapter(imageAdapter);
+        
+        // Videos RecyclerView (VIEW-ONLY)
+        videoAdapter = new VideoAdapter(videoList, new VideoAdapter.OnVideoClickListener() {
+            @Override
+            public void onVideoClick(Uri videoUri) {
+                playVideo(videoUri);
+            }
+            
+            @Override
+            public void onVideoDelete(int position) {
+                // NO DELETE for officers - view only
+                Toast.makeText(OfficerCaseDetailActivity.this, "View only - cannot delete evidence", Toast.LENGTH_SHORT).show();
+            }
+        });
+        recyclerVideos.setLayoutManager(new LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false));
+        recyclerVideos.setAdapter(videoAdapter);
+    }
+    
+    private void setupListeners() {
+        // Officer Action Buttons
+        if (btnUpdateStatus != null) {
+            btnUpdateStatus.setOnClickListener(v -> showUpdateStatusDialog());
+        }
+        if (btnViewPersonHistory != null) {
+            btnViewPersonHistory.setOnClickListener(v -> openViewPersonHistory());
+        }
+        if (btnEdit != null) {
+            btnEdit.setOnClickListener(v -> showEditRestriction());
+        }
+        if (btnResolveCase != null) {
+            btnResolveCase.setOnClickListener(v -> showResolveCaseDialog());
+        }
+        
+        // Investigation Feature Buttons
+        if (btnAddWitness != null) {
+            btnAddWitness.setOnClickListener(v -> openAddWitness());
+        }
+        if (btnAddSuspect != null) {
+            btnAddSuspect.setOnClickListener(v -> openAddSuspect());
+        }
+        if (btnAddEvidence != null) {
+            btnAddEvidence.setOnClickListener(v -> openAddEvidence());
+        }
+        if (btnCreateHearing != null) {
+            btnCreateHearing.setOnClickListener(v -> openCreateHearing());
+        }
+        if (btnDocumentResolution != null) {
+            btnDocumentResolution.setOnClickListener(v -> openDocumentResolution());
+        }
+        if (btnKPForms != null) {
+            btnKPForms.setOnClickListener(v -> openKPForms());
+        }
+    }
+    
+    private void loadCaseDetails() {
+        GlobalLoadingManager.show(this, "Loading case details...");
+        
+        Executors.newSingleThreadExecutor().execute(() -> {
+            try {
+                database = BlotterDatabase.getDatabase(this);
+                if (database == null) {
+                    runOnUiThread(() -> {
+                        GlobalLoadingManager.hide();
+                        Toast.makeText(this, "Database error", Toast.LENGTH_SHORT).show();
+                        finish();
+                    });
+                    return;
+                }
+                
+                currentReport = database.blotterReportDao().getReportById(reportId);
+                android.util.Log.d("OfficerCaseDetail", "Loaded report ID: " + reportId + ", Report: " + (currentReport != null ? currentReport.getCaseNumber() : "NULL"));
+                
+                runOnUiThread(() -> {
+                    GlobalLoadingManager.hide();
+                    if (currentReport != null) {
+                        populateViews();
+                        loadMediaFiles();
+                    } else {
+                        Toast.makeText(this, "Case not found (ID: " + reportId + ")", Toast.LENGTH_SHORT).show();
+                        finish();
+                    }
+                });
+            } catch (Exception e) {
+                android.util.Log.e("OfficerCaseDetail", "Error loading case", e);
+                runOnUiThread(() -> {
+                    GlobalLoadingManager.hide();
+                    Toast.makeText(this, "Error loading case: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                    finish();
+                });
+            }
+        });
+    }
+    
+    private void populateViews() {
+        // Case Information
+        tvCaseNumber.setText(currentReport.getCaseNumber());
+        chipStatus.setText(currentReport.getStatus());
+        tvIncidentType.setText(currentReport.getIncidentType());
+        tvIncidentDate.setText(new java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault())
+            .format(new java.util.Date(currentReport.getIncidentDate())));
+        tvIncidentLocation.setText(currentReport.getIncidentLocation());
+        
+        // Complainant Information
+        tvComplainantName.setText(currentReport.getComplainantName());
+        tvComplainantContact.setText(currentReport.getComplainantContact());
+        tvComplainantAddress.setText(currentReport.getComplainantAddress());
+        
+        // Respondent Information - ALWAYS SHOW with N/A for empty fields
+        String respondentName = currentReport.getRespondentName();
+        String respondentAlias = currentReport.getRespondentAlias();
+        String respondentAddress = currentReport.getRespondentAddress();
+        String respondentContact = currentReport.getRespondentContact();
+        String accusation = currentReport.getAccusation();
+        String relationship = currentReport.getRelationshipToComplainant();
+        
+        // Set text with N/A for empty values
+        tvRespondentName.setText(respondentName != null && !respondentName.isEmpty() ? respondentName : "N/A");
+        tvRespondentAlias.setText(respondentAlias != null && !respondentAlias.isEmpty() ? respondentAlias : "N/A");
+        tvRespondentAddress.setText(respondentAddress != null && !respondentAddress.isEmpty() ? respondentAddress : "N/A");
+        tvRespondentContact.setText(respondentContact != null && !respondentContact.isEmpty() ? respondentContact : "N/A");
+        if (tvAccusation != null) tvAccusation.setText(accusation != null && !accusation.isEmpty() ? accusation : "N/A");
+        if (tvRelationship != null) tvRelationship.setText(relationship != null && !relationship.isEmpty() ? relationship : "N/A");
+        
+        // ALWAYS show Respondent section (even if empty)
+        TextView tvRespondentTitle = findViewById(R.id.tvRespondentTitle);
+        androidx.cardview.widget.CardView cardRespondent = findViewById(R.id.cardRespondent);
+        if (tvRespondentTitle != null) tvRespondentTitle.setVisibility(View.VISIBLE);
+        if (cardRespondent != null) cardRespondent.setVisibility(View.VISIBLE);
+        
+        // ALWAYS show respondent details
+        LinearLayout layoutRespondentName = findViewById(R.id.layoutRespondentName);
+        LinearLayout layoutRespondentAlias = findViewById(R.id.layoutRespondentAlias);
+        LinearLayout layoutRespondentAddress = findViewById(R.id.layoutRespondentAddress);
+        LinearLayout layoutRespondentContact = findViewById(R.id.layoutRespondentContact);
+        LinearLayout layoutAccusation = findViewById(R.id.layoutAccusation);
+        LinearLayout layoutRelationship = findViewById(R.id.layoutRelationship);
+        
+        if (layoutRespondentName != null) layoutRespondentName.setVisibility(View.VISIBLE);
+        if (layoutRespondentAlias != null) layoutRespondentAlias.setVisibility(View.VISIBLE);
+        if (layoutRespondentAddress != null) layoutRespondentAddress.setVisibility(View.VISIBLE);
+        if (layoutRespondentContact != null) layoutRespondentContact.setVisibility(View.VISIBLE);
+        if (layoutAccusation != null) layoutAccusation.setVisibility(View.VISIBLE);
+        if (layoutRelationship != null) layoutRelationship.setVisibility(View.VISIBLE);
+        
+        // View Person History button - ALWAYS VISIBLE and CLICKABLE
+        // When clicked with N/A, it will show toast message
+        if (btnViewPersonHistory != null) {
+            btnViewPersonHistory.setEnabled(true);
+            btnViewPersonHistory.setAlpha(1.0f);
+        }
+        
+        Log.d("OfficerCaseDetail", "✅ Respondent Information ALWAYS SHOWN: " + tvRespondentName.getText());
+        
+        // Narrative
+        tvNarrative.setText(currentReport.getNarrative());
+        
+        // Update button visibility based on status
+        updateButtonVisibility();
+        
+        // Initialize and update investigation timeline
+        initInvestigationTimeline();
+        updateInvestigationSteps();
+    }
+    
+    private void updateButtonVisibility() {
+        if (currentReport == null) return;
+        
+        String status = currentReport.getStatus() != null ? currentReport.getStatus().toUpperCase() : "PENDING";
+        Log.d("OfficerCaseDetail", "updateButtonVisibility - Status: " + status + ", btnUpdateStatus: " + (btnUpdateStatus != null ? "NOT NULL" : "NULL"));
+        
+        // Hide EDIT and DELETE buttons (user role buttons)
+        if (btnEdit != null) btnEdit.setVisibility(View.GONE);
+        if (btnDelete != null) btnDelete.setVisibility(View.GONE);
+        
+        // ALWAYS show View Person History button (informational, not an action)
+        if (btnViewPersonHistory != null) {
+            btnViewPersonHistory.setVisibility(View.VISIBLE);
+            Log.d("OfficerCaseDetail", "✅ View Person History button ALWAYS SHOWN");
+        }
+        
+        // Show "Start Investigation" button when status is "ASSIGNED"
+        if ("ASSIGNED".equals(status)) {
+            if (btnStartInvestigation != null) {
+                btnStartInvestigation.setVisibility(View.VISIBLE);
+                btnStartInvestigation.setOnClickListener(v -> showUpdateStatusDialog());
+                Log.d("OfficerCaseDetail", "✅ Start Investigation button SHOWN");
+            } else {
+                Log.e("OfficerCaseDetail", "❌ btnStartInvestigation is NULL!");
+            }
+            
+            // Hide Update Status button
+            if (btnUpdateStatus != null) btnUpdateStatus.setVisibility(View.GONE);
+            
+            // Hide all investigation feature buttons
+            if (btnAddWitness != null) btnAddWitness.setVisibility(View.GONE);
+            if (btnAddSuspect != null) btnAddSuspect.setVisibility(View.GONE);
+            if (btnAddEvidence != null) btnAddEvidence.setVisibility(View.GONE);
+            if (btnCreateHearing != null) btnCreateHearing.setVisibility(View.GONE);
+            if (btnDocumentResolution != null) btnDocumentResolution.setVisibility(View.GONE);
+            if (btnKPForms != null) btnKPForms.setVisibility(View.GONE);
+            // btnSummons removed - Summons feature deleted from system
+            if (btnResolveCase != null) {
+                btnResolveCase.setVisibility(View.GONE);
+            }
+        }
+        // Show investigation feature buttons and "Resolve Case" when status is "ONGOING" or "IN PROGRESS"
+        else if ("ONGOING".equals(status) || "IN PROGRESS".equals(status)) {
+            // Hide Start Investigation button (but keep View Person History visible)
+            if (btnStartInvestigation != null) btnStartInvestigation.setVisibility(View.GONE);
+            
+            // Show Update Status button
+            if (btnUpdateStatus != null) {
+                btnUpdateStatus.setText("Update Status");
+                btnUpdateStatus.setVisibility(View.VISIBLE);
+                btnUpdateStatus.setOnClickListener(v -> showUpdateStatusDialog());
+                Log.d("OfficerCaseDetail", "✅ Update Status button SHOWN");
+            }
+            
+            // Show all investigation feature buttons
+            if (btnAddWitness != null) btnAddWitness.setVisibility(View.VISIBLE);
+            if (btnAddSuspect != null) btnAddSuspect.setVisibility(View.VISIBLE);
+            if (btnAddEvidence != null) btnAddEvidence.setVisibility(View.VISIBLE);
+            if (btnCreateHearing != null) btnCreateHearing.setVisibility(View.VISIBLE);
+            if (btnDocumentResolution != null) btnDocumentResolution.setVisibility(View.VISIBLE);
+            if (btnKPForms != null) btnKPForms.setVisibility(View.VISIBLE);
+            // btnSummons removed - Summons feature deleted from system
+            
+            // Make sure resolve case button is created and visible
+            if (btnResolveCase == null) {
+                createResolveButton();
+            } else {
+                btnResolveCase.setVisibility(View.VISIBLE);
+            }
+        }
+        // Hide all action buttons when resolved
+        else if ("RESOLVED".equals(status)) {
+            // Hide all buttons
+            if (btnUpdateStatus != null) btnUpdateStatus.setVisibility(View.GONE);
+            if (btnStartInvestigation != null) btnStartInvestigation.setVisibility(View.GONE);
+            if (btnViewPersonHistory != null) btnViewPersonHistory.setVisibility(View.GONE);
+            if (btnAddWitness != null) btnAddWitness.setVisibility(View.GONE);
+            if (btnAddSuspect != null) btnAddSuspect.setVisibility(View.GONE);
+            if (btnAddEvidence != null) btnAddEvidence.setVisibility(View.GONE);
+            if (btnCreateHearing != null) btnCreateHearing.setVisibility(View.GONE);
+            if (btnDocumentResolution != null) btnDocumentResolution.setVisibility(View.GONE);
+            if (btnKPForms != null) btnKPForms.setVisibility(View.GONE);
+            // btnSummons removed - Summons feature deleted from system
+            if (btnResolveCase != null) btnResolveCase.setVisibility(View.GONE);
+            
+            // Show a message that the case is resolved
+            Toast.makeText(this, "This case has been resolved and is now closed.", Toast.LENGTH_SHORT).show();
+        }
+        // Handle any other status
+        else {
+            // Hide all buttons by default for unknown statuses
+            if (btnUpdateStatus != null) btnUpdateStatus.setVisibility(View.GONE);
+            if (btnAddWitness != null) btnAddWitness.setVisibility(View.GONE);
+            if (btnAddSuspect != null) btnAddSuspect.setVisibility(View.GONE);
+            if (btnAddEvidence != null) btnAddEvidence.setVisibility(View.GONE);
+            if (btnCreateHearing != null) btnCreateHearing.setVisibility(View.GONE);
+            if (btnDocumentResolution != null) btnDocumentResolution.setVisibility(View.GONE);
+            if (btnKPForms != null) btnKPForms.setVisibility(View.GONE);
+            // btnSummons removed - Summons feature deleted from system
+            if (btnResolveCase != null) btnResolveCase.setVisibility(View.GONE);
+            
+            Log.w("OfficerCaseDetail", "Unknown status: " + status);
+        }
+    }
+    
+    private void createResolveButton() {
+        // Create resolve button dynamically if not in layout
+        if (btnResolveCase == null && btnUpdateStatus != null) {
+            btnResolveCase = new MaterialButton(this);
+            btnResolveCase.setText("Resolve Case");
+            btnResolveCase.setLayoutParams(btnUpdateStatus.getLayoutParams());
+            // Add to parent view if possible
+            View parent = (View) btnUpdateStatus.getParent();
+            if (parent != null && parent instanceof android.view.ViewGroup) {
+                ((android.view.ViewGroup) parent).addView(btnResolveCase);
+                btnResolveCase.setOnClickListener(v -> showResolveCaseDialog());
+            }
+        }
+    }
+    
+    private void loadMediaFiles() {
+        // Load images and videos from BlotterReport (same source as case list badge)
+        try {
+            if (currentReport == null) return;
+            
+            imageList.clear();
+            videoList.clear();
+            
+            Log.d("OfficerCaseDetail", "Loading media for reportId: " + reportId);
+            Log.d("OfficerCaseDetail", "ImageUris: " + currentReport.getImageUris());
+            Log.d("OfficerCaseDetail", "VideoUris: " + currentReport.getVideoUris());
+            
+            // Load image URIs from report
+            if (currentReport.getImageUris() != null && !currentReport.getImageUris().isEmpty()) {
+                String[] imageArray = currentReport.getImageUris().split(",");
+                for (String imageUri : imageArray) {
+                    if (!imageUri.trim().isEmpty()) {
+                        imageList.add(Uri.parse(imageUri.trim()));
+                        Log.d("OfficerCaseDetail", "Added image: " + imageUri.trim());
+                    }
+                }
+            }
+            
+            // Load video URIs from report
+            if (currentReport.getVideoUris() != null && !currentReport.getVideoUris().isEmpty()) {
+                String[] videoArray = currentReport.getVideoUris().split(",");
+                for (String videoUri : videoArray) {
+                    if (!videoUri.trim().isEmpty()) {
+                        videoList.add(Uri.parse(videoUri.trim()));
+                        Log.d("OfficerCaseDetail", "Added video: " + videoUri.trim());
+                    }
+                }
+            }
+            
+            Log.d("OfficerCaseDetail", "Final counts - Images: " + imageList.size() + ", Videos: " + videoList.size());
+            updateMediaViews();
+        } catch (Exception e) {
+            Log.e("OfficerCaseDetail", "Error loading media files: " + e.getMessage(), e);
+            e.printStackTrace();
+        }
+    }
+    
+    private void updateMediaViews() {
+        // Show/hide media sections based on content
+        if (imageList.isEmpty()) {
+            tvImagesLabel.setVisibility(View.GONE);
+            recyclerImages.setVisibility(View.GONE);
+            android.view.View cardImages = findViewById(R.id.cardImages);
+            if (cardImages != null) cardImages.setVisibility(View.GONE);
+        } else {
+            tvImagesLabel.setVisibility(View.VISIBLE);
+            recyclerImages.setVisibility(View.VISIBLE);
+            android.view.View cardImages = findViewById(R.id.cardImages);
+            if (cardImages != null) cardImages.setVisibility(View.VISIBLE);
+            imageAdapter.notifyDataSetChanged();
+        }
+        
+        if (videoList.isEmpty()) {
+            tvVideosLabel.setVisibility(View.GONE);
+            recyclerVideos.setVisibility(View.GONE);
+            android.view.View cardVideos = findViewById(R.id.cardVideos);
+            if (cardVideos != null) cardVideos.setVisibility(View.GONE);
+        } else {
+            tvVideosLabel.setVisibility(View.VISIBLE);
+            recyclerVideos.setVisibility(View.VISIBLE);
+            android.view.View cardVideos = findViewById(R.id.cardVideos);
+            if (cardVideos != null) cardVideos.setVisibility(View.VISIBLE);
+            videoAdapter.notifyDataSetChanged();
+        }
+    }
+    
+    // Officer-specific functions
+    private void showUpdateStatusDialog() {
+        if (currentReport == null) {
+            Toast.makeText(this, "Case not loaded", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        
+        String status = currentReport.getStatus() != null ? currentReport.getStatus().toLowerCase() : "pending";
+        
+        // Check if case is in "assigned" status
+        if ("assigned".equals(status)) {
+            try {
+                // Show "Start Investigation" dialog with modern design
+                LayoutInflater inflater = LayoutInflater.from(this);
+                android.view.View dialogView = inflater.inflate(R.layout.dialog_start_investigation, null);
+                
+                com.google.android.material.button.MaterialButton btnCancel = dialogView.findViewById(R.id.btnCancel);
+                com.google.android.material.button.MaterialButton btnStart = dialogView.findViewById(R.id.btnStartInvestigation);
+                
+                if (btnCancel == null || btnStart == null) {
+                    Log.e("OfficerCaseDetail", "Dialog buttons not found!");
+                    return;
+                }
+                
+                com.google.android.material.dialog.MaterialAlertDialogBuilder dialogBuilder = new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                    .setView(dialogView)
+                    .setCancelable(false);
+                
+                androidx.appcompat.app.AlertDialog alertDialog = dialogBuilder.create();
+                
+                btnCancel.setOnClickListener(v -> alertDialog.dismiss());
+                btnStart.setOnClickListener(v -> {
+                    alertDialog.dismiss();
+                    startInvestigation();
+                });
+                
+                alertDialog.show();
+            } catch (Exception e) {
+                Log.e("OfficerCaseDetail", "Error showing dialog: " + e.getMessage(), e);
+                Toast.makeText(this, "Error showing dialog", Toast.LENGTH_SHORT).show();
+            }
+        } else if ("ongoing".equals(status) || "in-progress".equals(status)) {
+            // Show dialog to resolve case
+            new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Case Status: Ongoing")
+                .setMessage("Would you like to resolve this case?")
+                .setPositiveButton("Resolve Case", (dialog, which) -> {
+                    showResolveCaseDialog();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+        } else {
+            Toast.makeText(this, "Cannot start investigation for this case status: " + currentReport.getStatus(), Toast.LENGTH_SHORT).show();
+        }
+    }
+    
+    private void startInvestigation() {
+        GlobalLoadingManager.show(this, "Starting investigation...");
+        
+        // Update status from "assigned" to "ongoing"
+        Executors.newSingleThreadExecutor().execute(() -> {
+            try {
+                String oldStatus = currentReport.getStatus();
+                currentReport.setStatus("ONGOING");
+                currentReport.setUpdatedAt(System.currentTimeMillis());
+                database.blotterReportDao().updateReport(currentReport);
+                
+                // Get officer user info for notifications
+                int officerUserId = preferencesManager.getUserId();
+                com.example.blottermanagementsystem.data.entity.User officerUser = database.userDao().getUserById(officerUserId);
+                String officerName = officerUser != null ? officerUser.getFirstName() + " " + officerUser.getLastName() : "Officer";
+                
+                // Notify user and admin about status change
+                if (currentReport.getUserId() > 0) {
+                    notificationHelper.notifyStatusChange(
+                        currentReport.getUserId(),
+                        currentReport.getCaseNumber(),
+                        oldStatus,
+                        "ongoing",
+                        currentReport.getId(),
+                        officerName
+                    );
+                }
+                
+                // Notify all admins
+                List<com.example.blottermanagementsystem.data.entity.User> admins = database.userDao().getUsersByRole("Admin");
+                for (com.example.blottermanagementsystem.data.entity.User admin : admins) {
+                    notificationHelper.notifyStatusChange(
+                        admin.getId(),
+                        currentReport.getCaseNumber(),
+                        oldStatus,
+                        "ongoing",
+                        currentReport.getId(),
+                        officerName
+                    );
+                }
+                
+                runOnUiThread(() -> {
+                    GlobalLoadingManager.hide();
+                    Toast.makeText(this, "Investigation started! Status changed to: Ongoing", Toast.LENGTH_LONG).show();
+                    chipStatus.setText("ONGOING");
+                    updateButtonVisibility();
+                    updateInvestigationSteps();  // ← Refresh timeline to show investigation features
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    GlobalLoadingManager.hide();
+                    Toast.makeText(this, "Error starting investigation: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                });
+            }
+        });
+    }
+    
+    /**
+     * Checks if all required investigation steps are completed
+     * @return Pair<Boolean, String> where first is true if all requirements are met,
+     *         and second contains error message if not met
+     */
+    private Pair<Boolean, String> checkInvestigationRequirements() {
+        if (currentReport == null) {
+            return new Pair<>(false, "Case not loaded");
+        }
+        
+        // Get counts of investigation items
+        int witnessCount = database.witnessDao().getWitnessesByReportId(currentReport.getId()).size();
+        int suspectCount = database.suspectDao().getSuspectsByReportId(currentReport.getId()).size();
+        int evidenceCount = database.evidenceDao().getEvidenceByReportId(currentReport.getId()).size();
+        int hearingCount = database.hearingDao().getHearingsByReportId(currentReport.getId()).size();
+        
+        // Check for documents
+        boolean hasResolution = !database.resolutionDao().getResolutionsByReportId(currentReport.getId()).isEmpty();
+        boolean hasKPForm = !database.kpFormDao().getFormsByReportId(currentReport.getId()).isEmpty();
+        boolean hasSummons = database.summonsDao().getSummonsByReportId(currentReport.getId()) != null;
+        
+        // Build list of missing requirements
+        List<String> missingRequirements = new ArrayList<>();
+        
+        if (witnessCount == 0) missingRequirements.add("At least one witness must be added");
+        if (suspectCount == 0) missingRequirements.add("At least one suspect must be added");
+        if (evidenceCount == 0) missingRequirements.add("At least one piece of evidence must be added");
+        if (hearingCount == 0) {
+            missingRequirements.add("At least one hearing must be conducted");
+        }
+        if (!hasResolution) missingRequirements.add("A resolution document is required");
+        if (!hasKPForm) missingRequirements.add("A KP Form is required");
+        if (!hasSummons) missingRequirements.add("A Summons document is required");
+        
+        if (missingRequirements.isEmpty()) {
+            return new Pair<>(true, "");
+        } else {
+            StringBuilder errorMessage = new StringBuilder("Please complete the following before resolving the case:\n\n");
+            for (String req : missingRequirements) {
+                errorMessage.append("• ").append(req).append("\n");
+            }
+            errorMessage.append("\nUse the investigation buttons below to complete these actions.");
+            return new Pair<>(false, errorMessage.toString());
+        }
+    }
+    
+    private void showResolveCaseDialog() {
+        if (currentReport == null) {
+            Toast.makeText(this, "Case not loaded", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        
+        String status = currentReport.getStatus() != null ? currentReport.getStatus().toLowerCase() : "pending";
+        
+        // Only allow resolving if status is "ongoing" or "in-progress"
+        if (!"ongoing".equals(status) && !"in-progress".equals(status)) {
+            Toast.makeText(this, "Case must be in 'Ongoing' status to be resolved", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        
+        // Check investigation requirements
+        Pair<Boolean, String> requirementsCheck = checkInvestigationRequirements();
+        if (!requirementsCheck.first) {
+            // Show what needs to be done before resolving
+            new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Action Required")
+                .setMessage(requirementsCheck.second)
+                .setPositiveButton("OK", null)
+                .show();
+            return;
+        }
+        
+        // If all requirements are met, show confirmation dialog
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Resolve Case")
+            .setMessage("Are you sure you want to mark this case as resolved? This will change the status from 'Ongoing' to 'Resolved' and close the case.")
+            .setPositiveButton("Resolve Case", (dialog, which) -> {
+                resolveCase();
+            })
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+    
+    private void resolveCase() {
+        GlobalLoadingManager.show(this, "Resolving case...");
+        
+        // Update status from "ongoing" to "resolved"
+        Executors.newSingleThreadExecutor().execute(() -> {
+            try {
+                String oldStatus = currentReport.getStatus();
+                currentReport.setStatus("RESOLVED");
+                currentReport.setUpdatedAt(System.currentTimeMillis());
+                database.blotterReportDao().updateReport(currentReport);
+                
+                // Get officer user info for notifications
+                int officerUserId = preferencesManager.getUserId();
+                com.example.blottermanagementsystem.data.entity.User officerUser = database.userDao().getUserById(officerUserId);
+                String officerName = officerUser != null ? officerUser.getFirstName() + " " + officerUser.getLastName() : "Officer";
+                
+                // Notify user who filed the case
+                List<Integer> userIds = new ArrayList<>();
+                if (currentReport.getUserId() > 0) {
+                    userIds.add(currentReport.getUserId());
+                }
+                
+                // Notify all admins
+                List<com.example.blottermanagementsystem.data.entity.User> admins = database.userDao().getUsersByRole("Admin");
+                for (com.example.blottermanagementsystem.data.entity.User admin : admins) {
+                    userIds.add(admin.getId());
+                }
+                
+                // Send case resolved notifications
+                if (!userIds.isEmpty()) {
+                    notificationHelper.notifyCaseResolved(
+                        userIds,
+                        currentReport.getCaseNumber(),
+                        "Case has been resolved by " + officerName,
+                        currentReport.getId(),
+                        officerName
+                    );
+                }
+                
+                // Also send status change notification
+                if (currentReport.getUserId() > 0) {
+                    notificationHelper.notifyStatusChange(
+                        currentReport.getUserId(),
+                        currentReport.getCaseNumber(),
+                        oldStatus,
+                        "resolved",
+                        currentReport.getId(),
+                        officerName
+                    );
+                }
+                
+                runOnUiThread(() -> {
+                    GlobalLoadingManager.hide();
+                    Toast.makeText(this, "Case resolved! Status changed to: Resolved", Toast.LENGTH_LONG).show();
+                    chipStatus.setText("RESOLVED");
+                    updateButtonVisibility();
+                    updateInvestigationSteps();  // ← Refresh timeline to hide all investigation features
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    GlobalLoadingManager.hide();
+                    Toast.makeText(this, "Error resolving case: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                });
+            }
+        });
+    }
+    
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == 100 && resultCode == RESULT_OK) {
+            if (data != null && data.getBooleanExtra("INVESTIGATION_COMPLETE", false)) {
+                // Investigation completed - reload case details
+                loadCaseDetails();
+            }
+        }
+    }
+    
+    /**
+     * Initialize the investigation timeline RecyclerView
+     */
+    private void initInvestigationTimeline() {
+        rvInvestigationSteps = findViewById(R.id.rvInvestigationSteps);
+        if (rvInvestigationSteps != null) {
+            rvInvestigationSteps.setLayoutManager(new LinearLayoutManager(this));
+            stepAdapter = new InvestigationStepAdapter(investigationSteps, this::onStepAction);
+            rvInvestigationSteps.setAdapter(stepAdapter);
+        }
+    }
+    
+    /**
+     * Handle step action button clicks
+     */
+    private void onStepAction(InvestigationStep step) {
+        if (step == null) return;
+        
+        switch (step.getTag()) {
+            case "start_investigation":
+                startInvestigation();
+                break;
+            case "add_witness":
+                openAddWitness();
+                break;
+            case "add_suspect":
+                openAddSuspect();
+                break;
+            case "add_evidence":
+                openAddEvidence();
+                break;
+            case "create_hearing":
+                openCreateHearing();
+                break;
+            case "document_resolution":
+                openDocumentResolution();
+                break;
+            case "kp_form":
+                openKPForms();
+                break;
+            case "summons":
+                // Summons feature removed from system
+                break;
+        }
+    }
+    
+    /**
+     * Update the investigation steps based on report status
+     * MUST be called on background thread due to database access
+     */
+    private void updateInvestigationSteps() {
+        // Run on background thread to avoid database access on main thread
+        Executors.newSingleThreadExecutor().execute(() -> {
+            if (currentReport == null || database == null) return;
+            
+            String status = currentReport.getStatus() != null ? 
+                currentReport.getStatus().toLowerCase() : "assigned";
+            boolean isOngoing = "ongoing".equals(status) || "in-progress".equals(status);
+            
+            investigationSteps.clear();
+        
+        // Step 1: Start Investigation
+        InvestigationStep startStep = new InvestigationStep(
+            "start_investigation",
+            "Start Investigation",
+            "Begin the investigation process for this case",
+            "start_investigation"
+        );
+        startStep.setCompleted(!"assigned".equals(status));
+        startStep.setInProgress("assigned".equals(status));
+        // DO NOT show action button when ASSIGNED - use the top button instead
+        // Only show action button after investigation has started (ONGOING)
+        if ("assigned".equals(status)) {
+            // Don't set action text or icon - button won't be clickable
+            startStep.setActionText(null);
+            startStep.setActionIcon(0);
+        } else if (isOngoing) {
+            startStep.setActionText("In Progress");
+            startStep.setActionIcon(R.drawable.ic_play_arrow);
+        }
+        investigationSteps.add(startStep);
+        
+        if (isOngoing || "resolved".equals(status)) {
+            // Add Witness Step
+            InvestigationStep witnessStep = new InvestigationStep(
+                "add_witness",
+                "Record Witness Statements",
+                "Document statements from people who witnessed the incident",
+                "add_witness"
+            );
+            witnessStep.setCompleted(database.witnessDao().getWitnessesByReportId(currentReport.getId()).size() > 0);
+            witnessStep.setInProgress(!witnessStep.isCompleted() && isOngoing);
+            if (!witnessStep.isCompleted() && isOngoing) {
+                witnessStep.setActionText("Add Witness");
+                witnessStep.setActionIcon(R.drawable.ic_person_add);
+            }
+            investigationSteps.add(witnessStep);
+            
+            // Add Suspect Step
+            InvestigationStep suspectStep = new InvestigationStep(
+                "add_suspect",
+                "Identify Suspects",
+                "Document information about the person(s) involved",
+                "add_suspect"
+            );
+            suspectStep.setCompleted(database.suspectDao().getSuspectsByReportId(currentReport.getId()).size() > 0);
+            suspectStep.setInProgress(!suspectStep.isCompleted() && isOngoing);
+            if (!suspectStep.isCompleted() && isOngoing) {
+                suspectStep.setActionText("Add Suspect");
+                suspectStep.setActionIcon(R.drawable.ic_person_add);
+            }
+            investigationSteps.add(suspectStep);
+            
+            // Add Evidence Step
+            InvestigationStep evidenceStep = new InvestigationStep(
+                "add_evidence",
+                "Gather Evidence",
+                "Upload photos, videos, or documents related to the case",
+                "add_evidence"
+            );
+            evidenceStep.setCompleted(database.evidenceDao().getEvidenceByReportId(currentReport.getId()).size() > 0);
+            evidenceStep.setInProgress(!evidenceStep.isCompleted() && isOngoing);
+            if (!evidenceStep.isCompleted() && isOngoing) {
+                evidenceStep.setActionText("Add Evidence");
+                evidenceStep.setActionIcon(R.drawable.ic_add_photo);
+            }
+            investigationSteps.add(evidenceStep);
+            
+            // Add Hearing Step
+            InvestigationStep hearingStep = new InvestigationStep(
+                "create_hearing",
+                "Schedule Hearings",
+                "Conduct hearings with involved parties",
+                "create_hearing"
+            );
+            hearingStep.setCompleted(database.hearingDao().getHearingsByReportId(currentReport.getId()).size() > 0);
+            hearingStep.setInProgress(!hearingStep.isCompleted() && isOngoing);
+            if (!hearingStep.isCompleted() && isOngoing) {
+                hearingStep.setActionText("Schedule Hearing");
+                hearingStep.setActionIcon(R.drawable.ic_event);
+            }
+            investigationSteps.add(hearingStep);
+            
+            // Add Resolution Step
+            InvestigationStep resolutionStep = new InvestigationStep(
+                "document_resolution",
+                "Document Resolution",
+                "Record the outcome and resolution of the case",
+                "document_resolution"
+            );
+            resolutionStep.setCompleted(!database.resolutionDao().getResolutionsByReportId(currentReport.getId()).isEmpty());
+            resolutionStep.setInProgress(!resolutionStep.isCompleted() && isOngoing);
+            if (!resolutionStep.isCompleted() && isOngoing) {
+                resolutionStep.setActionText("Add Resolution");
+                resolutionStep.setActionIcon(R.drawable.ic_document);
+            }
+            investigationSteps.add(resolutionStep);
+            
+            // Add KP Form Step
+            InvestigationStep kpFormStep = new InvestigationStep(
+                "kp_form",
+                "Complete KP Form",
+                "Fill out the official blotter form",
+                "kp_form"
+            );
+            kpFormStep.setCompleted(!database.kpFormDao().getFormsByReportId(currentReport.getId()).isEmpty());
+            kpFormStep.setInProgress(!kpFormStep.isCompleted() && isOngoing);
+            if (!kpFormStep.isCompleted() && isOngoing) {
+                kpFormStep.setActionText("Complete Form");
+                kpFormStep.setActionIcon(R.drawable.ic_edit_document);
+            }
+            investigationSteps.add(kpFormStep);
+            
+            // Add Summons Step
+            InvestigationStep summonsStep = new InvestigationStep(
+                "summons",
+                "Issue Summons",
+                "Generate official summons if needed",
+                "summons"
+            );
+            summonsStep.setCompleted(!database.summonsDao().getSummonsByReportId(currentReport.getId()).isEmpty());
+            summonsStep.setInProgress(!summonsStep.isCompleted() && isOngoing);
+            if (!summonsStep.isCompleted() && isOngoing) {
+                summonsStep.setActionText("Issue Summons");
+                summonsStep.setActionIcon(R.drawable.ic_notifications);
+            }
+            investigationSteps.add(summonsStep);
+            }
+            
+            // Update UI on main thread
+            runOnUiThread(() -> {
+                if (stepAdapter != null) {
+                    stepAdapter.notifyDataSetChanged();
+                }
+            });
+        });
+    }
+    
+    private void showEditRestriction() {
+        // Officers cannot edit original case details - investigation only
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Edit Restriction")
+            .setMessage("Officers cannot edit original case details to maintain evidence integrity. Use investigation functions to update case status and add notes.")
+            .setPositiveButton("OK", null)
+            .show();
+    }
+    
+    
+    // Media viewing functions (same as User and Admin roles)
+    private void viewImage(Uri uri) {
+        try {
+            View dialogView = getLayoutInflater().inflate(R.layout.dialog_image_viewer, null);
+            android.widget.ImageView imageView = dialogView.findViewById(R.id.imageView);
+            com.google.android.material.button.MaterialButton btnClose = dialogView.findViewById(R.id.btnClose);
+            
+            // Use Glide for better image loading
+            com.bumptech.glide.Glide.with(this)
+                .load(uri)
+                .placeholder(R.drawable.ic_image_placeholder)
+                .error(R.drawable.ic_image_placeholder)
+                .into(imageView);
+            
+            androidx.appcompat.app.AlertDialog dialog = new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setView(dialogView)
+                .setCancelable(true)
+                .create();
+            
+            btnClose.setOnClickListener(v -> dialog.dismiss());
+            
+            // Make dialog full screen
+            dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+            dialog.show();
+            
+            // Set dialog to full screen after showing
+            android.view.Window window = dialog.getWindow();
+            if (window != null) {
+                window.setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT, 
+                               android.view.ViewGroup.LayoutParams.MATCH_PARENT);
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "Error loading image", Toast.LENGTH_SHORT).show();
+            Log.e("OfficerCaseDetail", "Error showing image: " + e.getMessage());
+        }
+    }
+    
+    private void playVideo(Uri uri) {
+        // Use the same video player implementation as ReportDetailActivity
+        View dialogView = getLayoutInflater().inflate(R.layout.dialog_video_player, null);
+        android.widget.VideoView videoView = dialogView.findViewById(R.id.videoView);
+        android.widget.ImageButton btnClose = dialogView.findViewById(R.id.btnClose);
+        android.widget.ImageButton btnPlayPause = dialogView.findViewById(R.id.btnPlayPause);
+        android.widget.ImageButton btnRewind = dialogView.findViewById(R.id.btnRewind);
+        android.widget.ImageButton btnForward = dialogView.findViewById(R.id.btnForward);
+        android.view.View videoControlsOverlay = dialogView.findViewById(R.id.videoControlsOverlay);
+        android.view.View centerControls = dialogView.findViewById(R.id.centerControls);
+        android.view.View bottomControls = dialogView.findViewById(R.id.bottomControls);
+        android.widget.SeekBar seekBar = dialogView.findViewById(R.id.seekBar);
+        android.widget.TextView tvCurrentTime = dialogView.findViewById(R.id.tvCurrentTime);
+        android.widget.TextView tvDuration = dialogView.findViewById(R.id.tvDuration);
+        android.widget.ProgressBar progressBar = dialogView.findViewById(R.id.progressBar);
+        
+        // Fade Animation Handler - declare early
+        android.os.Handler controlsHandler = new android.os.Handler();
+        
+        // Set video URI and start
+        videoView.setVideoURI(uri);
+        
+        // Show progress while loading
+        progressBar.setVisibility(View.VISIBLE);
+        
+        // Hide progress when ready
+        videoView.setOnPreparedListener(mp -> {
+            progressBar.setVisibility(View.GONE);
+            
+            // Set up SeekBar
+            int duration = videoView.getDuration();
+            seekBar.setMax(duration);
+            tvDuration.setText("-" + formatTime(duration));
+            
+            videoView.start();
+            
+            // Start updating progress
+            updateVideoProgress(videoView, seekBar, tvCurrentTime, tvDuration, controlsHandler);
+        });
+        
+        // Handle errors
+        videoView.setOnErrorListener((mp, what, extra) -> {
+            progressBar.setVisibility(View.GONE);
+            Toast.makeText(this, "Error playing video", Toast.LENGTH_SHORT).show();
+            return true;
+        });
+        
+        androidx.appcompat.app.AlertDialog dialog = new androidx.appcompat.app.AlertDialog.Builder(this)
+            .setView(dialogView)
+            .setCancelable(true)
+            .create();
+        
+        // Fade Out Animation
+        Runnable fadeOutControls = () -> {
+            centerControls.animate()
+                .alpha(0.0f)
+                .setDuration(300)
+                .start();
+            bottomControls.animate()
+                .alpha(0.0f)
+                .setDuration(300)
+                .start();
+        };
+        
+        // Fade In Animation
+        Runnable fadeInControls = () -> {
+            centerControls.animate()
+                .alpha(1.0f)
+                .setDuration(300)
+                .start();
+            bottomControls.animate()
+                .alpha(1.0f)
+                .setDuration(300)
+                .start();
+            
+            // Auto-hide after 3 seconds
+            controlsHandler.removeCallbacks(fadeOutControls);
+            controlsHandler.postDelayed(fadeOutControls, 3000);
+        };
+        
+        // Show/hide controls on video tap with fade animation
+        videoControlsOverlay.setOnClickListener(v -> {
+            if (centerControls.getAlpha() > 0.5f) {
+                // Currently visible, fade out
+                controlsHandler.removeCallbacks(fadeOutControls);
+                fadeOutControls.run();
+            } else {
+                // Currently hidden, fade in
+                fadeInControls.run();
+            }
+        });
+        
+        // Play/Pause button with new icons
+        btnPlayPause.setOnClickListener(v -> {
+            if (videoView.isPlaying()) {
+                videoView.pause();
+                btnPlayPause.setImageResource(R.drawable.ic_play);
+            } else {
+                videoView.start();
+                btnPlayPause.setImageResource(R.drawable.ic_pause);
+            }
+            fadeInControls.run(); // Reset fade timer
+        });
+        
+        // Rewind 5 seconds
+        btnRewind.setOnClickListener(v -> {
+            int currentPosition = videoView.getCurrentPosition();
+            int newPosition = Math.max(0, currentPosition - 5000);
+            videoView.seekTo(newPosition);
+            
+            // UPDATE SEEKBAR AND TIMESTAMPS IMMEDIATELY
+            int duration = videoView.getDuration();
+            int remaining = duration - newPosition;
+            seekBar.setProgress(newPosition);
+            tvCurrentTime.setText(formatTime(newPosition));
+            tvDuration.setText("-" + formatTime(remaining));
+            
+            fadeInControls.run(); // Reset fade timer
+        });
+        
+        // Forward 5 seconds
+        btnForward.setOnClickListener(v -> {
+            int currentPosition = videoView.getCurrentPosition();
+            int duration = videoView.getDuration();
+            int newPosition = Math.min(duration, currentPosition + 5000);
+            videoView.seekTo(newPosition);
+            
+            // UPDATE SEEKBAR AND TIMESTAMPS IMMEDIATELY
+            int remaining = duration - newPosition;
+            seekBar.setProgress(newPosition);
+            tvCurrentTime.setText(formatTime(newPosition));
+            tvDuration.setText("-" + formatTime(remaining));
+            
+            fadeInControls.run(); // Reset fade timer
+        });
+        
+        // SeekBar interaction
+        seekBar.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(android.widget.SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser) {
+                    videoView.seekTo(progress);
+                    int duration = videoView.getDuration();
+                    int remaining = duration - progress;
+                    tvCurrentTime.setText(formatTime(progress));
+                    tvDuration.setText("-" + formatTime(remaining));
+                }
+            }
+            
+            @Override
+            public void onStartTrackingTouch(android.widget.SeekBar seekBar) {
+                // PAUSE auto-hide while dragging
+                controlsHandler.removeCallbacks(fadeOutControls);
+                // Show controls and keep them visible
+                centerControls.animate().alpha(1.0f).setDuration(300).start();
+                bottomControls.animate().alpha(1.0f).setDuration(300).start();
+            }
+            
+            @Override
+            public void onStopTrackingTouch(android.widget.SeekBar seekBar) {
+                // RESUME auto-hide after dragging stops
+                fadeInControls.run();
+            }
+        });
+        
+        // Close button
+        btnClose.setOnClickListener(v -> dialog.dismiss());
+        
+        // Start with controls visible, then auto-hide
+        fadeInControls.run();
+        
+        // Show dialog
+        dialog.show();
+    }
+    
+    /**
+     * Helper method to update video progress in the player
+     */
+    private void updateVideoProgress(
+        android.widget.VideoView videoView,
+        android.widget.SeekBar seekBar,
+        TextView tvCurrentTime,
+        TextView tvDuration,
+        Handler handler
+    ) {
+        if (videoView.isPlaying()) {
+            int currentPosition = videoView.getCurrentPosition();
+            int duration = videoView.getDuration();
+            int remaining = duration - currentPosition;
+            
+            // Update SeekBar progress
+            seekBar.setProgress(currentPosition);
+            
+            // Update timestamps
+            tvCurrentTime.setText(formatTime(currentPosition));
+            tvDuration.setText("-" + formatTime(remaining));
+            
+            // Schedule next update
+            handler.postDelayed(() -> updateVideoProgress(videoView, seekBar, tvCurrentTime, tvDuration, handler), 1000);
+        }
+    }
+    
+    private String formatTime(int milliseconds) {
+        int seconds = (milliseconds / 1000) % 60;
+        int minutes = (milliseconds / (1000 * 60)) % 60;
+        int hours = (milliseconds / (1000 * 60 * 60));
+        
+        if (hours > 0) {
+            return String.format("%d:%02d:%02d", hours, minutes, seconds);
+        } else {
+            return String.format("%d:%02d", minutes, seconds);
+        }
+    }
+    
+    // Investigation Feature Methods - Floating Dialogs
+    private void openAddWitness() {
+        AddWitnessDialogFragment dialog = AddWitnessDialogFragment.newInstance(reportId, witness -> {
+            // Witness added successfully
+        });
+        dialog.show(getSupportFragmentManager(), "AddWitness");
+    }
+    
+    private void openAddSuspect() {
+        AddSuspectDialogFragment dialog = AddSuspectDialogFragment.newInstance(reportId, suspect -> {
+            // Suspect added successfully
+        });
+        dialog.show(getSupportFragmentManager(), "AddSuspect");
+    }
+    
+    private void openAddEvidence() {
+        AddEvidenceDialogFragment dialog = AddEvidenceDialogFragment.newInstance(reportId, evidence -> {
+            // Evidence added successfully
+        });
+        dialog.show(getSupportFragmentManager(), "AddEvidence");
+    }
+    
+    private void openCreateHearing() {
+        ScheduleHearingDialogFragment dialog = ScheduleHearingDialogFragment.newInstance(reportId, hearing -> {
+            // Hearing scheduled successfully
+        });
+        dialog.show(getSupportFragmentManager(), "ScheduleHearing");
+    }
+    
+    private void openDocumentResolution() {
+        DocumentResolutionDialogFragment dialog = DocumentResolutionDialogFragment.newInstance(reportId, resolution -> {
+            // Resolution documented successfully
+        });
+        dialog.show(getSupportFragmentManager(), "DocumentResolution");
+    }
+    
+    private void openKPForms() {
+        KPFormsDialogFragment dialog = KPFormsDialogFragment.newInstance(reportId, (formName, formId) -> {
+            // Form selected
+        });
+        dialog.show(getSupportFragmentManager(), "KPForms");
+    }
+    
+    private void openViewPersonHistory() {
+        if (currentReport == null) {
+            Toast.makeText(this, "No case information available", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        
+        // Get respondent name from database
+        String respondentName = currentReport.getRespondentName();
+        
+        // If no respondent name, use "Unknown" as placeholder
+        final String finalRespondentName;
+        if (respondentName == null || respondentName.isEmpty() || respondentName.equals("N/A")) {
+            finalRespondentName = "Unknown Respondent";
+            Log.d("OfficerCaseDetail", "⚠️ View Person History - No respondent name, using placeholder");
+        } else {
+            finalRespondentName = respondentName;
+        }
+        
+        // Create or get person ID from database
+        Executors.newSingleThreadExecutor().execute(() -> {
+            try {
+                // Get or create Person record
+                com.example.blottermanagementsystem.data.entity.Person person = 
+                    database.personDao().getPersonByName(finalRespondentName);
+                
+                int personId;
+                if (person == null) {
+                    // Create new person record
+                    person = new com.example.blottermanagementsystem.data.entity.Person();
+                    person.setName(finalRespondentName);
+                    person.setCreatedDate(System.currentTimeMillis());
+                    personId = (int) database.personDao().insertPerson(person);
+                    Log.d("OfficerCaseDetail", "Created new person record: " + finalRespondentName + " (ID: " + personId + ")");
+                } else {
+                    personId = person.getId();
+                    Log.d("OfficerCaseDetail", "Found existing person: " + finalRespondentName + " (ID: " + personId + ")");
+                }
+                
+                // Open View Person History Activity
+                runOnUiThread(() -> {
+                    Intent intent = new Intent(OfficerCaseDetailActivity.this, OfficerViewPersonHistoryActivity.class);
+                    intent.putExtra("person_id", personId);
+                    intent.putExtra("person_name", finalRespondentName);
+                    startActivity(intent);
+                });
+            } catch (Exception e) {
+                Log.e("OfficerCaseDetail", "Error opening person history: " + e.getMessage(), e);
+                runOnUiThread(() -> Toast.makeText(OfficerCaseDetailActivity.this, "Error: " + e.getMessage(), Toast.LENGTH_SHORT).show());
+            }
+        });
+    }
+    
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Refresh case details when returning to this screen
+        if (reportId != -1) {
+            loadCaseDetails();
+        }
+    }
+}
